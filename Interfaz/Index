@@ -1,0 +1,611 @@
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+import re
+
+# ─────────────────────────────────────────────
+#  COLORES Y FUENTES
+# ─────────────────────────────────────────────
+BG_MAIN      = "#0F1923"   # azul muy oscuro
+BG_PANEL     = "#162130"   # panel lateral
+BG_EDITOR    = "#0A1018"   # fondo del editor
+BG_RESULTS   = "#0D1820"   # fondo resultados
+ACCENT_GREEN = "#7DC72B"   # verde UC
+ACCENT_BLUE  = "#1E5FA8"   # azul UC
+TEXT_MAIN    = "#E8F4FD"
+TEXT_DIM     = "#6B8FA8"
+BTN_HOVER    = "#2A7A3B"
+BTN_ACTIVE   = "#5AAA1A"
+ERROR_COLOR  = "#E74C3C"
+WARNING_COLOR= "#F39C12"
+SUCCESS_COLOR= "#27AE60"
+
+FONT_TITLE   = ("Segoe UI", 11, "bold")
+FONT_MONO    = ("Consolas", 11)
+FONT_MONO_SM = ("Consolas", 10)
+FONT_BTN     = ("Segoe UI", 10, "bold")
+FONT_LABEL   = ("Segoe UI", 9)
+FONT_HEADER  = ("Segoe UI", 14, "bold")
+
+# ─────────────────────────────────────────────
+#  DEFINICIÓN DEL LENGUAJE "LexC"
+#  (puedes personalizar todo esto)
+# ─────────────────────────────────────────────
+
+# Palabras reservadas estándar
+KEYWORDS = {
+    "si", "sino", "para", "mientras", "retorna",
+    "verdadero", "falso", "nulo",
+    # Tres palabras reservadas propias:
+    "mostrar",   # equivalente a print
+    "captura",   # equivalente a input
+    "rompe",     # equivalente a break
+}
+
+# Tipos de datos
+DATA_TYPES = {"entero", "decimal", "cadena", "booleano"}
+
+# Tabla de tokens: (nombre_token, patron_regex)
+TOKEN_RULES = [
+    ("COMENTARIO",      r"//[^\n]*"),
+    ("CADENA_LIT",      r'"[^"\n]*"'),
+    ("DECIMAL",         r"\d+\.\d+"),
+    ("ENTERO",          r"\d+"),
+    ("IGUAL_IGUAL",     r"=="),
+    ("DISTINTO",        r"!="),
+    ("MAYOR_IGUAL",     r">="),
+    ("MENOR_IGUAL",     r"<="),
+    ("AND",             r"&&"),
+    ("OR",              r"\|\|"),
+    ("ASIGNACION",      r"="),
+    ("MAYOR",           r">"),
+    ("MENOR",           r"<"),
+    ("MAS",             r"\+"),
+    ("MENOS",           r"-"),
+    ("MULT",            r"\*"),
+    ("DIV",             r"/"),
+    ("MODULO",          r"%"),
+    ("FIN_LINEA",       r";"),
+    ("PAREN_ABRE",      r"\("),
+    ("PAREN_CIERRA",    r"\)"),
+    ("LLAVE_ABRE",      r"\{"),
+    ("LLAVE_CIERRA",    r"\}"),
+    ("CORCH_ABRE",      r"\["),
+    ("CORCH_CIERRA",    r"\]"),
+    ("COMA",            r","),
+    ("PUNTO",           r"\."),
+    ("HASH",            r"#"),
+    ("AMPERSAND",       r"&"),
+    ("INTERROG",        r"\?"),
+    ("EXCLAMACION",     r"!"),
+    ("ARROBA",          r"@"),
+    ("IDENTIFICADOR",   r"[a-zA-Z_áéíóúÁÉÍÓÚñÑ][a-zA-Z0-9_áéíóúÁÉÍÓÚñÑ]*"),
+    ("ESPACIO",         r"[ \t\r]+"),
+    ("NUEVA_LINEA",     r"\n"),
+    ("DESCONOCIDO",     r"."),
+]
+
+MASTER_PATTERN = re.compile(
+    "|".join(f"(?P<{name}>{pattern})" for name, pattern in TOKEN_RULES)
+)
+
+# ─────────────────────────────────────────────
+#  ANALIZADOR LÉXICO
+# ─────────────────────────────────────────────
+def analizar_lexico(codigo: str):
+    tokens = []
+    errores = []
+    linea = 1
+
+    for mo in MASTER_PATTERN.finditer(codigo):
+        tipo = mo.lastgroup
+        valor = mo.group()
+
+        if tipo == "NUEVA_LINEA":
+            linea += 1
+            continue
+        if tipo == "ESPACIO":
+            continue
+        if tipo == "DESCONOCIDO":
+            errores.append({
+                "linea": linea,
+                "lexema": valor,
+                "mensaje": f"Carácter no reconocido: '{valor}'"
+            })
+            continue
+
+        # Clasificar identificadores
+        if tipo == "IDENTIFICADOR":
+            if valor in KEYWORDS:
+                tipo = "PALABRA_RESERVADA"
+            elif valor in DATA_TYPES:
+                tipo = "TIPO_DATO"
+
+        tokens.append({
+            "token": tipo,
+            "lexema": valor,
+            "linea": linea
+        })
+
+    return tokens, errores
+
+# ─────────────────────────────────────────────
+#  APLICACIÓN PRINCIPAL
+# ─────────────────────────────────────────────
+class CompiladorApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("LexC – Compilador")
+        self.state("zoomed")          # pantalla completa en Windows
+        self.configure(bg=BG_MAIN)
+
+        # Intentar maximizar en Linux también
+        try:
+            self.attributes("-zoomed", True)
+        except Exception:
+            pass
+
+        self._build_ui()
+
+    # ── construcción de UI ──────────────────
+    def _build_ui(self):
+        self.columnconfigure(0, weight=2)   # editor: 2/3
+        self.columnconfigure(1, weight=1)   # panel:  1/3
+        self.rowconfigure(0, weight=0)      # header
+        self.rowconfigure(1, weight=1)      # contenido
+        self.rowconfigure(2, weight=1)      # resultados
+
+        self._build_header()
+        self._build_editor()
+        self._build_right_panel()
+        self._build_results()
+
+    def _build_header(self):
+        hdr = tk.Frame(self, bg=ACCENT_BLUE, height=52)
+        hdr.grid(row=0, column=0, columnspan=2, sticky="ew")
+        hdr.grid_propagate(False)
+
+        # Barra de color UC
+        accent = tk.Frame(hdr, bg=ACCENT_GREEN, width=6)
+        accent.pack(side="left", fill="y")
+
+        tk.Label(
+            hdr, text="⬡  LexC", bg=ACCENT_BLUE, fg=TEXT_MAIN,
+            font=("Segoe UI", 16, "bold"), padx=16
+        ).pack(side="left", pady=10)
+
+        tk.Label(
+            hdr, text="Compilador – Proyecto Final  |  Universidad Cuauhtémoc",
+            bg=ACCENT_BLUE, fg="#A8C8E8", font=FONT_LABEL
+        ).pack(side="left", pady=10)
+
+        # Botón cargar archivo en el header
+        self._btn_cargar = self._flat_button(
+            hdr, "📂  Cargar Archivo", self._cargar_archivo,
+            bg="#1A4A7A", fg=TEXT_MAIN, pad=(14, 0)
+        )
+        self._btn_cargar.pack(side="right", pady=8, padx=12)
+
+    def _build_editor(self):
+        frame = tk.Frame(self, bg=BG_MAIN, padx=12, pady=10)
+        frame.grid(row=1, column=0, sticky="nsew")
+        frame.rowconfigure(1, weight=1)
+        frame.columnconfigure(0, weight=1)
+
+        lbl_frame = tk.Frame(frame, bg=BG_MAIN)
+        lbl_frame.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+
+        tk.Label(
+            lbl_frame, text="✏  Código Fuente",
+            bg=BG_MAIN, fg=ACCENT_GREEN, font=FONT_TITLE
+        ).pack(side="left")
+
+        self._btn_limpiar = self._flat_button(
+            lbl_frame, "Limpiar", self._limpiar_editor,
+            bg="#1A2A3A", fg=TEXT_DIM, pad=(10, 0)
+        )
+        self._btn_limpiar.pack(side="right")
+
+        editor_frame = tk.Frame(frame, bg=ACCENT_BLUE, bd=1)
+        editor_frame.grid(row=1, column=0, sticky="nsew")
+        editor_frame.rowconfigure(0, weight=1)
+        editor_frame.columnconfigure(0, weight=1)
+
+        # Números de línea
+        self.line_numbers = tk.Text(
+            editor_frame, width=4, bg="#0D1820", fg=TEXT_DIM,
+            font=FONT_MONO, state="disabled", bd=0,
+            selectbackground="#0D1820", cursor="arrow"
+        )
+        self.line_numbers.grid(row=0, column=0, sticky="ns")
+
+        sep = tk.Frame(editor_frame, bg=ACCENT_BLUE, width=1)
+        sep.grid(row=0, column=1, sticky="ns")
+
+        self.editor = tk.Text(
+            editor_frame, bg=BG_EDITOR, fg=TEXT_MAIN,
+            font=FONT_MONO, insertbackground=ACCENT_GREEN,
+            selectbackground="#1E4A7A", bd=0, wrap="none",
+            undo=True, padx=8, pady=6
+        )
+        self.editor.grid(row=0, column=2, sticky="nsew")
+        editor_frame.columnconfigure(2, weight=1)
+
+        vsb = ttk.Scrollbar(editor_frame, orient="vertical",
+                            command=self._editor_scroll_y)
+        vsb.grid(row=0, column=3, sticky="ns")
+
+        hsb = ttk.Scrollbar(editor_frame, orient="horizontal",
+                            command=self.editor.xview)
+        hsb.grid(row=1, column=0, columnspan=4, sticky="ew")
+
+        self.editor.configure(yscrollcommand=vsb.set,
+                              xscrollcommand=hsb.set)
+        self.editor.bind("<KeyRelease>", self._on_editor_change)
+        self.editor.bind("<MouseWheel>", self._sync_scroll)
+
+        # Placeholder
+        self._set_placeholder()
+
+        self._update_line_numbers()
+
+    def _build_right_panel(self):
+        panel = tk.Frame(self, bg=BG_PANEL, padx=16, pady=16)
+        panel.grid(row=1, column=1, rowspan=1, sticky="nsew",
+                   padx=(0, 0), pady=0)
+        panel.columnconfigure(0, weight=1)
+
+        tk.Label(
+            panel, text="Analizadores",
+            bg=BG_PANEL, fg=TEXT_MAIN, font=FONT_HEADER
+        ).grid(row=0, column=0, pady=(0, 6), sticky="w")
+
+        tk.Frame(panel, bg=ACCENT_GREEN, height=2).grid(
+            row=1, column=0, sticky="ew", pady=(0, 20))
+
+        # ── Botón 1: Léxico ──
+        self._btn_lexico = self._analyzer_button(
+            panel, "🔍  Análisis Léxico",
+            "Tokeniza el código fuente",
+            self._run_lexico, ACCENT_GREEN
+        )
+        self._btn_lexico.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+
+        # ── Botón 2: Sintáctico (deshabilitado) ──
+        self._btn_sintactico = self._analyzer_button(
+            panel, "🌲  Análisis Sintáctico",
+            "Disponible en la siguiente entrega",
+            None, "#2A3A4A", disabled=True
+        )
+        self._btn_sintactico.grid(row=3, column=0, sticky="ew", pady=(0, 12))
+
+        # ── Botón 3: Semántico (deshabilitado) ──
+        self._btn_semantico = self._analyzer_button(
+            panel, "🧠  Análisis Semántico",
+            "Disponible en la siguiente entrega",
+            None, "#2A3A4A", disabled=True
+        )
+        self._btn_semantico.grid(row=4, column=0, sticky="ew", pady=(0, 12))
+
+        # Separador + info
+        tk.Frame(panel, bg="#1E3A5A", height=1).grid(
+            row=5, column=0, sticky="ew", pady=(10, 16))
+
+        info = (
+            "📋  Lenguaje: LexC\n\n"
+            "Tipos de datos:\n  entero, decimal,\n  cadena, booleano\n\n"
+            "Estructuras:\n  si/sino, mientras, para\n\n"
+            "Palabras propias:\n  mostrar, captura, rompe\n\n"
+            "Símbolos: ; ( ) { } [ ]\n  # & ? ! @"
+        )
+        tk.Label(
+            panel, text=info, bg=BG_PANEL, fg=TEXT_DIM,
+            font=("Consolas", 9), justify="left", anchor="w"
+        ).grid(row=6, column=0, sticky="w")
+
+    def _build_results(self):
+        frame = tk.Frame(self, bg=BG_MAIN, padx=12)
+        frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(0, 10))
+        frame.rowconfigure(1, weight=1)
+        frame.columnconfigure(0, weight=1)
+
+        # Pestañas
+        tab_bar = tk.Frame(frame, bg=BG_MAIN)
+        tab_bar.grid(row=0, column=0, sticky="ew")
+
+        tk.Label(
+            tab_bar, text="📊  Resultados del Análisis",
+            bg=BG_MAIN, fg=ACCENT_GREEN, font=FONT_TITLE
+        ).pack(side="left")
+
+        self.status_lbl = tk.Label(
+            tab_bar, text="", bg=BG_MAIN, fg=TEXT_DIM, font=FONT_LABEL
+        )
+        self.status_lbl.pack(side="right", padx=8)
+
+        # Notebook para tokens / errores
+        style = ttk.Style()
+        style.theme_use("default")
+        style.configure("Dark.TNotebook", background=BG_MAIN,
+                        borderwidth=0)
+        style.configure("Dark.TNotebook.Tab",
+                        background="#1A2A3A", foreground=TEXT_DIM,
+                        padding=[12, 6], font=FONT_LABEL)
+        style.map("Dark.TNotebook.Tab",
+                  background=[("selected", ACCENT_BLUE)],
+                  foreground=[("selected", TEXT_MAIN)])
+
+        self.nb = ttk.Notebook(frame, style="Dark.TNotebook")
+        self.nb.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
+
+        # Tab 1: Tokens
+        tab_tokens = tk.Frame(self.nb, bg=BG_RESULTS)
+        self.nb.add(tab_tokens, text="  Tokens  ")
+        tab_tokens.rowconfigure(0, weight=1)
+        tab_tokens.columnconfigure(0, weight=1)
+
+        cols = ("N°", "Token", "Lexema", "Línea")
+        self.tree = ttk.Treeview(
+            tab_tokens, columns=cols, show="headings",
+            style="Dark.Treeview"
+        )
+        self._style_treeview()
+
+        for col in cols:
+            ancho = 60 if col == "N°" else (180 if col == "Línea" else 220)
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=ancho, anchor="center")
+        self.tree.column("Lexema", anchor="w", width=300)
+
+        vsb2 = ttk.Scrollbar(tab_tokens, orient="vertical",
+                             command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb2.set)
+
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb2.grid(row=0, column=1, sticky="ns")
+
+        # Tab 2: Errores
+        tab_errores = tk.Frame(self.nb, bg=BG_RESULTS)
+        self.nb.add(tab_errores, text="  Errores  ")
+        tab_errores.rowconfigure(0, weight=1)
+        tab_errores.columnconfigure(0, weight=1)
+
+        self.errores_text = tk.Text(
+            tab_errores, bg=BG_RESULTS, fg=ERROR_COLOR,
+            font=FONT_MONO_SM, state="disabled", bd=0,
+            padx=10, pady=8
+        )
+        vsb3 = ttk.Scrollbar(tab_errores, orient="vertical",
+                              command=self.errores_text.yview)
+        self.errores_text.configure(yscrollcommand=vsb3.set)
+        self.errores_text.grid(row=0, column=0, sticky="nsew")
+        vsb3.grid(row=0, column=1, sticky="ns")
+
+    # ── Helpers de widgets ───────────────────
+    def _flat_button(self, parent, text, cmd, bg, fg, pad=(0, 0)):
+        btn = tk.Button(
+            parent, text=text, command=cmd,
+            bg=bg, fg=fg, font=FONT_BTN,
+            relief="flat", cursor="hand2",
+            padx=pad[0], pady=pad[1],
+            activebackground=BTN_HOVER, activeforeground="white",
+            bd=0
+        )
+        return btn
+
+    def _analyzer_button(self, parent, title, subtitle, cmd,
+                         color, disabled=False):
+        container = tk.Frame(parent, bg=color, cursor="hand2" if not disabled else "arrow")
+        container.columnconfigure(0, weight=1)
+
+        inner = tk.Frame(container, bg=color, padx=14, pady=12)
+        inner.grid(row=0, column=0, sticky="ew")
+
+        fg_title = TEXT_MAIN if not disabled else "#3A5A6A"
+        fg_sub   = "#A0C0D0" if not disabled else "#2A3A4A"
+
+        lbl_title = tk.Label(inner, text=title, bg=color,
+                             fg=fg_title, font=FONT_BTN, anchor="w")
+        lbl_title.grid(row=0, column=0, sticky="w")
+
+        lbl_sub = tk.Label(inner, text=subtitle, bg=color,
+                           fg=fg_sub, font=FONT_LABEL, anchor="w")
+        lbl_sub.grid(row=1, column=0, sticky="w")
+
+        if not disabled and cmd:
+            for w in (container, inner, lbl_title, lbl_sub):
+                w.bind("<Button-1>", lambda e: cmd())
+                w.bind("<Enter>", lambda e, c=color: self._btn_enter(e, c))
+                w.bind("<Leave>", lambda e, c=color: self._btn_leave(e, c))
+
+        return container
+
+    def _btn_enter(self, event, base_color):
+        w = event.widget
+        try:
+            # Aclarar ligeramente
+            r, g, b = self.winfo_rgb(base_color)
+            r = min(65535, r + 8000)
+            g = min(65535, g + 8000)
+            b = min(65535, b + 8000)
+            lighter = f"#{r//256:02x}{g//256:02x}{b//256:02x}"
+            w.configure(bg=lighter)
+        except Exception:
+            pass
+
+    def _btn_leave(self, event, base_color):
+        event.widget.configure(bg=base_color)
+
+    def _style_treeview(self):
+        style = ttk.Style()
+        style.configure("Dark.Treeview",
+                        background=BG_RESULTS,
+                        foreground=TEXT_MAIN,
+                        fieldbackground=BG_RESULTS,
+                        rowheight=26,
+                        font=FONT_MONO_SM)
+        style.configure("Dark.Treeview.Heading",
+                        background="#1E3A5A",
+                        foreground=ACCENT_GREEN,
+                        font=("Segoe UI", 9, "bold"))
+        style.map("Dark.Treeview",
+                  background=[("selected", ACCENT_BLUE)],
+                  foreground=[("selected", "white")])
+
+    # ── Números de línea ─────────────────────
+    def _update_line_numbers(self):
+        self.line_numbers.config(state="normal")
+        self.line_numbers.delete("1.0", "end")
+        lines = int(self.editor.index("end-1c").split(".")[0])
+        nums = "\n".join(str(i) for i in range(1, lines + 1))
+        self.line_numbers.insert("1.0", nums)
+        self.line_numbers.config(state="disabled")
+
+    def _editor_scroll_y(self, *args):
+        self.editor.yview(*args)
+        self.line_numbers.yview(*args)
+
+    def _sync_scroll(self, event):
+        self.line_numbers.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _on_editor_change(self, event=None):
+        self._update_line_numbers()
+        if self._placeholder_active():
+            pass
+
+    # ── Placeholder ──────────────────────────
+    def _set_placeholder(self):
+        placeholder = (
+            "// Escribe o pega tu código aquí...\n"
+            "// También puedes cargar un archivo de texto con el botón 📂\n\n"
+            "entero x = 10;\n"
+            "entero y = 20;\n\n"
+            "si (x < y) {\n"
+            "    mostrar(\"x es menor\");\n"
+            "} sino {\n"
+            "    mostrar(\"y es menor\");\n"
+            "}"
+        )
+        self.editor.insert("1.0", placeholder)
+        self.editor.tag_add("placeholder", "1.0", "end")
+        self.editor.tag_config("placeholder", foreground="#2A5A4A")
+        self.editor.bind("<FocusIn>", self._clear_placeholder)
+
+    def _placeholder_active(self):
+        return "placeholder" in self.editor.tag_names("1.0")
+
+    def _clear_placeholder(self, event=None):
+        if self._placeholder_active():
+            self.editor.delete("1.0", "end")
+            self.editor.tag_delete("placeholder")
+            self.editor.unbind("<FocusIn>")
+
+    # ── Acciones ─────────────────────────────
+    def _cargar_archivo(self):
+        path = filedialog.askopenfilename(
+            title="Cargar archivo de código",
+            filetypes=[
+                ("Archivos de texto", "*.txt *.lc *.lexc *.code"),
+                ("Todos los archivos", "*.*")
+            ]
+        )
+        if not path:
+            return
+        try:
+            contenido = None
+            for enc in ("utf-8-sig", "utf-8", "latin-1", "cp1252"):
+                try:
+                    with open(path, "r", encoding=enc) as f:
+                        contenido = f.read()
+                    break
+                except (UnicodeDecodeError, LookupError):
+                    continue
+            if contenido is None:
+                raise ValueError("No se pudo detectar la codificación del archivo.")
+            self.editor.delete("1.0", "end")
+            if self._placeholder_active():
+                self.editor.tag_delete("placeholder")
+                self.editor.unbind("<FocusIn>")
+            self.editor.insert("1.0", contenido)
+            self._update_line_numbers()
+            self.status_lbl.config(
+                text=f"Archivo cargado: {path.split('/')[-1]}",
+                fg=SUCCESS_COLOR
+            )
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo leer el archivo:\n{e}")
+
+    def _limpiar_editor(self):
+        self.editor.delete("1.0", "end")
+        self._limpiar_resultados()
+        self._set_placeholder()
+        self._update_line_numbers()
+        self.status_lbl.config(text="", fg=TEXT_DIM)
+
+    def _limpiar_resultados(self):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        self.errores_text.config(state="normal")
+        self.errores_text.delete("1.0", "end")
+        self.errores_text.config(state="disabled")
+
+    def _run_lexico(self):
+        codigo = self.editor.get("1.0", "end-1c")
+        if not codigo.strip() or self._placeholder_active():
+            messagebox.showwarning("Sin código",
+                                   "Escribe o carga código antes de analizar.")
+            return
+
+        self._limpiar_resultados()
+        tokens, errores = analizar_lexico(codigo)
+
+        # Llenar tabla de tokens
+        tag_colors = {
+            "PALABRA_RESERVADA": "#7DC72B",
+            "TIPO_DATO":         "#4ECDC4",
+            "CADENA_LIT":        "#E8A87C",
+            "ENTERO":            "#96CEB4",
+            "DECIMAL":           "#96CEB4",
+            "COMENTARIO":        "#5A7A5A",
+        }
+
+        for i, tok in enumerate(tokens, 1):
+            tag = tok["token"]
+            iid = self.tree.insert(
+                "", "end",
+                values=(i, tok["token"], tok["lexema"], tok["linea"]),
+                tags=(tag,)
+            )
+            color = tag_colors.get(tag, TEXT_MAIN)
+            self.tree.tag_configure(tag, foreground=color)
+
+        # Llenar errores
+        self.errores_text.config(state="normal")
+        if errores:
+            for err in errores:
+                self.errores_text.insert(
+                    "end",
+                    f"  ❌  Línea {err['linea']:>3}  |  {err['mensaje']}\n\n"
+                )
+            self.nb.tab(1, text=f"  Errores ({len(errores)})  ")
+        else:
+            self.errores_text.insert(
+                "end",
+                "  ✅  No se encontraron errores léxicos.\n"
+            )
+            self.errores_text.tag_add("ok", "1.0", "end")
+            self.errores_text.tag_config("ok", foreground=SUCCESS_COLOR)
+            self.nb.tab(1, text="  Errores (0)  ")
+        self.errores_text.config(state="disabled")
+
+        # Status
+        self.status_lbl.config(
+            text=f"✔  {len(tokens)} tokens encontrados   "
+                 f"{'⚠  ' + str(len(errores)) + ' error(es)' if errores else ''}",
+            fg=SUCCESS_COLOR if not errores else WARNING_COLOR
+        )
+        self.nb.select(0)
+
+# ─────────────────────────────────────────────
+if __name__ == "__main__":
+    app = CompiladorApp()
+    app.mainloop()

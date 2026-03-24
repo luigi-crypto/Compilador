@@ -1,0 +1,35 @@
+// Programa de prueba - LexC
+// Palabras reservadas propias: mostrar, captura, rompe
+
+entero contador = 0;
+entero limite = 5;
+cadena nombre = "LexC";
+
+mostrar("Bienvenido al lenguaje LexC");
+
+// Estructura si/sino
+si (contador == 0) {
+    mostrar("El contador inicia en cero");
+} sino {
+    mostrar("El contador ya tiene valor");
+}
+
+// Estructura mientras con rompe
+mientras (contador < limite) {
+    contador = contador + 1;
+    mostrar(contador);
+
+    si (contador == 3) {
+        mostrar("Llegamos a 3, rompemos el ciclo");
+        rompe;
+    }
+}
+
+// Estructura para
+para (entero i = 0; i < limite; i = i + 1) {
+    mostrar(i);
+}
+
+// Uso de captura
+cadena entrada = captura("Ingresa tu nombre: ");
+mostrar(entrada);
